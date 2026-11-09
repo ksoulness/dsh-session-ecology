@@ -1,0 +1,65 @@
+{
+  "name": "dsh-session-ecology",
+  "version": "0.5.1",
+  "description": "DeepSeek Harness (DSH) session ecology steward, manual session organizer, zero-restart Recycle-Bin archived/orphan purge, PROJECT.md memory guard & 4-tab Web Settings UI.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis",
+    "session-management",
+    "context-compaction",
+    "session-rollover",
+    "project-memory"
+  ],
+  "author": "ksoulness",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ksoulness/dsh-session-ecology.git"
+  },
+  "homepage": "https://github.com/ksoulness/dsh-session-ecology#readme",
+  "bugs": {
+    "url": "https://github.com/ksoulness/dsh-session-ecology/issues"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./core": "./lib/core.js",
+    "./organizer": "./lib/organizer.js",
+    "./project-memory": "./lib/project-memory.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --import ./test/dsh-peer-loader.mjs --test test/ecology.test.mjs test/client.test.mjs test/project-memory.test.mjs && node --import ./test/dsh-peer-loader.mjs test/cordis.integration.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": ">=0.1.0-rc.6 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  }
+}
