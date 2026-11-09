@@ -38,12 +38,13 @@
 - **高水位交互提醒（`systemPrompt.context`）**：当交互式会话（非定时巡检、非子代理）临近压缩水位时，自动提醒模型在收尾前同步架构决策与踩坑铁律至 `PROJECT.md`。
 - **多工作区只读巡检**：扫描全部注册工作区的 `PROJECT.md` 字节数、行数、四段式结构、`docs/HISTORY.md` 配套与本地失效相对链接。
 
-### 5. 四标签页 Web 设置伴侣面板
-在 DSH Web 端 **`设置 → 会话生态 / 会话管理`** 提供实时管理界面（基于 SSE 推送）：
-1. **🩺 生态水位**：实时查看三闸门进度、在途换卷阶段、手动换卷与历史交接单（Markdown 抽屉预览）。
-2. **🗂️ 会话整理**：多维筛选/排序、星标/标签/备注编辑、跨工作区搬家、批量归档/回收，以及 **「🧹 清理已归档」** 先盘点（Dry-Run）后执行抽屉。
-3. **📐 项目记忆**：跨工作区 `PROJECT.md` 容量进度条与断链告警面板。
-4. **⚙️ 阈值设置**：在线调整三闸门比例、疲劳倍数、`PROJECT.md` 护栏上限与自动开关，立即持久化生效。
+### 5. 对话框底部换卷距离进度条与四标签页 Web 设置面板
+- **底部状态栏换卷进度条（`conversation.composer.dock`，v0.7.0）**：在对话输入框下方（Token 用量与费用状态栏之间）实时展示当前会话距离自动换卷的三闸门最高水位条与卷号徽章（`#2`、`#3`）；悬停查看剩余百分比，点击弹出三闸门实时明细并支持二次确认 **「♻️ 立即换卷继承」**（零轮询定时器，基于客户端投影 + 回合结束 SSE 增量推送；桌面端同步自适应修复底部状态栏截断）。
+- **四标签页设置中心**：在 DSH Web 端 **`设置 → 会话生态 / 会话管理`** 提供实时管理界面（基于 SSE 推送）：
+  1. **🩺 生态水位**：实时查看三闸门进度、在途换卷阶段、手动换卷与历史交接单（Markdown 抽屉预览）。
+  2. **🗂️ 会话整理**：多维筛选/排序、星标/标签/备注编辑、跨工作区搬家、批量归档/回收，以及 **「🧹 清理已归档」** 先盘点（Dry-Run）后执行抽屉。
+  3. **📐 项目记忆**：跨工作区 `PROJECT.md` 容量进度条与断链告警面板。
+  4. **⚙️ 阈值设置**：在线调整三闸门比例、疲劳倍数、`PROJECT.md` 护栏上限与底部进度条开关，立即持久化生效。
 
 ---
 
@@ -58,13 +59,13 @@
 
 ### 方式一：通过 Release `.tgz` 包安装（推荐）
 
-1. 从 [Releases](https://github.com/ksoulness/dsh-session-ecology/releases) 下载最新 `dsh-session-ecology-0.5.1.tgz`（或克隆仓库后执行 `npm pack`），放置于 `$DSH_HOME/plugins/` 目录。
+1. 从 [Releases](https://github.com/ksoulness/dsh-session-ecology/releases) 下载最新 `dsh-session-ecology-0.7.0.tgz`（或克隆仓库后执行 `npm pack`），放置于 `$DSH_HOME/plugins/` 目录。
 2. 在 `$DSH_HOME/profiles/web/package.json` 的 `dependencies` 中添加引用并安装：
 
 ```json
 {
   "dependencies": {
-    "dsh-session-ecology": "file:../../plugins/dsh-session-ecology-0.5.1.tgz"
+    "dsh-session-ecology": "file:../../plugins/dsh-session-ecology-0.7.0.tgz"
   }
 }
 ```
@@ -117,6 +118,7 @@ curl http://127.0.0.1:3079/dsh-session-ecology/health
 所有接口均挂载于 `/dsh-session-ecology` 下，严格限制本机回环地址（`127.0.0.1` / `::1`）访问，且 `POST /api` 强制校验 `Origin` / `Sec-Fetch-Site` 防御跨站请求伪造（CSRF）：
 
 - `GET /dsh-session-ecology/health` — 插件版本、配置与健康摘要
+- `GET /dsh-session-ecology/session?sessionId=<id>` — 单会话轻量三闸门生态水位、卷代际与在途状态快照
 - `GET /dsh-session-ecology/status` — 活跃会话生态水位与历史记录
 - `GET /dsh-session-ecology/catalog` — 会话整理全量目录（含批注、工作区、定时任务计数）
 - `GET /dsh-session-ecology/project-memory` — 多工作区 `PROJECT.md` 健康快照
@@ -134,6 +136,7 @@ curl http://127.0.0.1:3079/dsh-session-ecology/health
 | :--- | :--- | :--- |
 | `enabled` | `true` | 插件总开关 |
 | `autoHandover` | `true` | 超阈值会话在回合空闲后是否自动换卷 |
+| `showDockMeter` | `true` | 在对话输入框下方底部状态栏（Token 与费用之间）显示三闸门换卷距离进度条 |
 | `postBootSweepEnabled` | `true` | 宿主启动 60 秒后是否自动巡检并清扫超标定时会话 |
 | `pressureRatio` | `0.40` | Gate 1：压后真实上下文负载占窗口 $W$ 比例上限 |
 | `surfaceRatio` | `1.00` | Gate 2：表面对话体积占窗口 $W$ 比例上限 |
@@ -162,3 +165,8 @@ npm test
 ## 开源协议
 
 [MIT License](./LICENSE)
+
+## 更新记录
+
+- `0.7.0`：新增对话框底部状态栏「换卷距离进度条」（`conversation.composer.dock` `order: 50`，零轮询实时追踪三闸门进度、点击弹出三闸门明细与手动换卷按钮、支持 `showDockMeter` 开关与桌面端底部栏防截断自适应）；新增 `GET /dsh-session-ecology/session` 单会话水位接口与回合结束 `session-waterline` SSE 推送；修复 `/health` 版本号动态读取。
+- `0.6.0`：`purge_archived` 四项修复——回收站「移出量 vs 真释放」拆分 + `empty_recycle_bin`；新增磁盘孤儿会话目录清理（`include_orphan_dirs`）；守卫顺序改为定时任务先于 mtime 活跃窗；孤儿缓存扫描覆盖 `storages` 下所有缓存源。

@@ -889,3 +889,130 @@ test('0.5.0 organizer.purgeArchived: dryRun survey, 60m active guard, favorite &
     fs.rmSync(tmpRoot, { recursive: true, force: true })
   }
 })
+
+test('0.6.0 organizer.purgeArchived: disk-only orphan dirs, extra cache sources, guard order & honest reclaim reporting', async () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-ecology-purge060-'))
+  const tmpHome = path.join(tmpRoot, 'dsh-home')
+  const wsDir = path.join(tmpRoot, 'ws-main')
+  fs.mkdirSync(wsDir, { recursive: true })
+  const realWs = fs.realpathSync(wsDir)
+
+  const archivedSid = 'session-11111111-0000-4444-8888-000000000001'
+  const hotSchedSid = 'session-22222222-0000-4444-8888-000000000002'
+  const ghostDirSid = 'session-33333333-0000-4444-8888-000000000003'
+  const orphanExtraCacheSid = 'session-44444444-0000-4444-8888-000000000004'
+  const nowMs = 1_760_000_000_000
+
+  function writeSessionAt(id, mtimeMs, extraHeader = {}) {
+    const dir = path.join(tmpHome, 'sessions', encodeProjectSegment(realWs), encodeFsSessionSegment(id))
+    fs.mkdirSync(dir, { recursive: true })
+    const fpath = path.join(dir, 'session.v4.jsonl')
+    fs.writeFileSync(fpath, `${JSON.stringify({ id, version: 4, cwd: realWs, createdAt: mtimeMs - 10_000, ...extraHeader })}\n${'y'.repeat(4096)}\n`, 'utf8')
+    const ts = new Date(mtimeMs)
+    fs.utimesSync(fpath, ts, ts)
+    fs.utimesSync(dir, ts, ts)
+    return dir
+  }
+
+  try {
+    const archivedDir = writeSessionAt(archivedSid, nowMs - 5 * 3600_000)
+    // 挂载定时任务 + 刚写过（15 分钟）：守卫顺序应为 has_active_schedules，而不是被 mtime 窗静默吞掉
+    const hotSchedDir = writeSessionAt(hotSchedSid, nowMs - 15 * 60_000)
+    // 任何注册表都没登记的纯磁盘孤儿目录
+    const ghostDir = writeSessionAt(ghostDirSid, nowMs - 8 * 3600_000)
+    // 只存在于"另一个 storage 缓存目录"的孤儿缓存
+    const extraCacheDir = path.join(tmpHome, 'storages', 'session-ecology-index', 'sessions')
+    fs.mkdirSync(extraCacheDir, { recursive: true })
+    fs.writeFileSync(path.join(extraCacheDir, `${orphanExtraCacheSid}.json`), JSON.stringify({ x: 1 }), 'utf8')
+
+    const archivedIds = [archivedSid, hotSchedSid]
+    const wsMain = {
+      id: 'ws-main',
+      title: 'Main',
+      path: realWs,
+      sessionIds: [archivedSid, hotSchedSid],
+      async attachSession(id) { if (!this.sessionIds.includes(id)) this.sessionIds.push(id) },
+      async detachSession(id) { this.sessionIds = this.sessionIds.filter(x => x !== id) },
+    }
+    const fakeCtx = {
+      sessions: { get: () => undefined, list: () => [] },
+      agents: { get: () => undefined },
+      sessionPersistence: {
+        coldLogMemo: new Map(),
+        locate: h => ({
+          path: path.join(tmpHome, 'sessions', encodeProjectSegment(h.cwd), encodeFsSessionSegment(h.id), 'session.v4.jsonl'),
+        }),
+      },
+      workspaceRegistry: {
+        archivedSessionIds: archivedIds,
+        pinnedSessionIds: [],
+        headers: new Map(),
+        sessionPaths: new Map(),
+        invalidSessionPaths: new Set(),
+        list: () => [wsMain],
+        archiveSession: async () => {},
+        unarchiveSession: async id => {
+          const i = archivedIds.indexOf(id)
+          if (i >= 0) archivedIds.splice(i, 1)
+        },
+        pinSession: async () => {},
+        unpinSession: async () => {},
+      },
+      schedule: {
+        catalog: async () => [{ id: 'sched-hot', sessionId: hotSchedSid, status: 'active', title: '高频巡检', kind: 'cron', expression: '*/5 * * * *', timeZone: 'Asia/Shanghai' }],
+        list: async ({ sessionId }) => (sessionId === hotSchedSid ? [{ id: 'sched-hot', title: '高频巡检' }] : []),
+        delete: async ({ id }) => ({ id, deleted: true }),
+      },
+    }
+
+    const recycled = []
+    const steward = createEcologySteward(fakeCtx, {
+      dshHome: tmpHome,
+      postBootSweepEnabled: false,
+      recycleHandler: async paths => {
+        const trash = path.join(tmpRoot, 'fake-recycle-bin')
+        fs.mkdirSync(trash, { recursive: true })
+        for (const p of paths) {
+          if (fs.existsSync(p)) {
+            fs.renameSync(p, path.join(trash, `${Date.now()}-${Math.random().toString(16).slice(2)}-${path.basename(p)}`))
+            recycled.push(p)
+          }
+        }
+        return { method: 'mock-recycle-bin', moved: paths }
+      },
+    })
+    steward.setScheduleService(fakeCtx.schedule)
+
+    const survey = await steward.organizer.purgeArchived({ dryRun: true, activeGuardMinutes: 60, nowMs })
+    assert.equal(survey.ok, true)
+    assert.equal(survey.archivedCandidateCount, 1, '只应有一个可清归档会话（hotSched 被定时任务保护）')
+    assert.equal(survey.orphanDirCount, 1, '磁盘孤儿目录应被纳入候选')
+    assert.equal(survey.candidates.find(c => c.sessionId === ghostDirSid)?.kind, 'orphan_dir')
+    assert.equal(survey.candidates.find(c => c.sessionId === archivedSid)?.kind, 'archived')
+    const hotSkip = survey.skippedItems.find(i => i.sessionId === hotSchedSid)
+    assert.equal(hotSkip.code, 'has_active_schedules', '守卫顺序：定时任务先于 mtime 活跃窗')
+    assert.match(survey.note, /回收站/)
+    assert.equal(fs.existsSync(ghostDir), true, 'dryRun 不得动磁盘')
+
+    const execRes = await steward.organizer.purgeArchived({ dryRun: false, activeGuardMinutes: 60, nowMs })
+    assert.equal(execRes.ok, true)
+    assert.equal(execRes.recycleBinEmptied, false)
+    assert.equal(execRes.orphanDirCount, 1)
+    assert.equal(execRes.summary.recycledOrphanDirs, 1)
+    assert.ok(execRes.orphanDirsScanned >= 1)
+    assert.equal(typeof execRes.reclaimedBytes, 'number')
+    assert.equal(typeof execRes.sessionsMovedBytes, 'number')
+    assert.equal(execRes.sessionsMovedBytes, execRes.sessionsFreedBytes)
+    assert.match(execRes.note, /未清空|清空/)
+    assert.equal(fs.existsSync(archivedDir), false)
+    assert.equal(fs.existsSync(ghostDir), false)
+    assert.equal(fs.existsSync(hotSchedDir), true, '带活跃定时任务的会话不得被清')
+    // 额外缓存源的孤儿缓存也被回收
+    assert.equal(fs.existsSync(path.join(extraCacheDir, `${orphanExtraCacheSid}.json`)), false)
+    assert.ok(recycled.some(p => p.includes(ghostDirSid)))
+
+    steward.dispose()
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true })
+  }
+})
