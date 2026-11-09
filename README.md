@@ -14,7 +14,7 @@
   2. **表面对话体积闸门（Gate 2）**：`surfaceTokens >= 1.00 * W`（默认 100%）
   3. **多代折叠疲劳闸门（Gate 3）**：标准模型累计 `totalTokens >= 350 * W`；高阶/高成本模型（Pro / Opus / GPT-5/6 / o1/o3 / `*-responses`）累计 `totalTokens >= 150 * W`
 - **绝不打断在途回合**：仅在 `turn/end`（`completed`）且会话收件箱完全空闲时触发，在热 KV 缓存上完成结构化自总结（超时或异常自动降级为确定性日志机械提取兜底）。
-- **完整上下文与配置继承**：同工作区创建续接会话（自动命名为 `原名 · #2`、`#3`，严格遵循 80 字节 UTF-8 上限并防止首轮自动改名覆盖），完整继承 `agentPreset`、`modelSelection`（不污染全局默认模型）、`permissionPreset`、置顶状态与人工整理批注（收藏/优先级/标签/备注）。
+- **完整上下文与配置继承（含上卷对话回忆锚点，v0.8.0）**：同工作区创建续接会话（自动命名为 `原名 · #2`、`#3`，严格遵循 80 字节 UTF-8 上限并防止首轮自动改名覆盖），完整继承 `agentPreset`、`modelSelection`（不污染全局默认模型）、`permissionPreset`、置顶状态与人工整理批注（收藏/优先级/标签/备注）；自动从上卷日志提取**最后一轮真实问答实录**（自动过滤系统注入上下文、`reasoning` 思维链与自总结轮次），并在新卷首条回执中用 4 行精炼小总结交代 **「之前在干什么 / 最后你说 / 最后它回」**。
 - **定时任务原子迁移**：采用 `新建 → 回读校验 → 删除旧任务` 三段式原子迁移，任一步失败自动回滚且保留旧会话不归档，杜绝漏跑或双跑。
 - **通道会话隔离**：自动识别并跳过 `bot/state.json` 管理的外部机器人会话与子代理（`subagent`）会话。
 
@@ -24,14 +24,13 @@
 - **零重启跨工作区搬家**：在线迁移会话至目标工作区，同步更新 `workspaceRegistry`、会话头 `cwd`、`working-directory/change` 事件与 `session_projcache`，无需重启 DSH 宿主。
 - **系统回收站级联清理**：清理主会话时自动级联其派生 `subagent` 目录与缓存文件，全部移入系统回收站并记录审计台账。
 
-### 3. 零重启「清理已归档 / 幽灵 ID / 孤儿缓存」（v0.5.0）
+### 3. 零重启「清理已归档 / 真孤儿目录 / 幽灵 ID / 孤儿缓存」（v0.5.0–v0.8.0）
 - **无需停机或杀进程**：直接在宿主内存中解绑已归档旧会话，告别传统停机清理脚本。
-- **四重安全护栏**：
-  - 仅扫描已归档主会话（活跃主会话 100% 免疫）；
-  - **最近活跃时间锁**（默认保护最近 `60` 分钟内仍有写入的会话，防误伤刚结束的后台任务）；
-  - **重要批注保护**（默认跳过标有 `⭐ 收藏` 或 `🔖 待复盘` 的归档会话）；
-  - **活跃定时任务保护**（默认跳过仍挂有活跃定时任务的会话）。
-- **内存幽灵 ID 与孤儿缓存同步对账**：自动摘除工作区 `sessionIds`、`archivedSessionIds`、`pinnedSessionIds` 中磁盘目录已不存在的幽灵 ID，并将 `storages/session_projcache/sessions/*.json` 中的无主孤儿缓存一并移入系统回收站。
+- **多重安全护栏与未分组活跃会话保护**：
+  - 正常活跃工作区会话与含真实聊天记录的 **「未分组」活跃对话** 100% 免疫（仅回收已归档会话及 0 消息空壳 / 失效目录 / 工作区脱挂真孤儿目录）；
+  - **活跃定时任务保护**与**重要批注保护**（默认跳过挂有活跃 `schedule` 或标有 `⭐ 收藏` / `🔖 待复盘` 的会话）；
+  - **最近活跃时间锁**（默认保护最近 `60` 分钟内仍有写入的会话，支持 `active_guard_minutes=0` 显式放行）。
+- **诚实空间计量与全量孤儿缓存对账**：清晰区分「从 `sessions/` 移入系统回收站的字节数（可随时还原）」与「清空回收站后真实腾出的磁盘可用空间」，并同步对账 `storages` 下各会话缓存目录的无主 JSON。
 
 ### 4. `PROJECT.md` 长期记忆护栏与健康巡检（v0.4.0）
 - **写入前硬护栏（`tools.guard`）**：默认限制工作区 `PROJECT.md` 不超过 **`15 KB`（15,360 B）且不超过 `250` 行**，引导将历史流水沉淀至 `docs/HISTORY.md`；内置**单调缩减放行**（对存量已超标文件允许净体积/行数缩减的瘦身编辑，绝不死锁）。
@@ -59,13 +58,13 @@
 
 ### 方式一：通过 Release `.tgz` 包安装（推荐）
 
-1. 从 [Releases](https://github.com/ksoulness/dsh-session-ecology/releases) 下载最新 `dsh-session-ecology-0.7.0.tgz`（或克隆仓库后执行 `npm pack`），放置于 `$DSH_HOME/plugins/` 目录。
+1. 从 [Releases](https://github.com/ksoulness/dsh-session-ecology/releases) 下载最新 `dsh-session-ecology-0.8.0.tgz`（或克隆仓库后执行 `npm pack`），放置于 `$DSH_HOME/plugins/` 目录。
 2. 在 `$DSH_HOME/profiles/web/package.json` 的 `dependencies` 中添加引用并安装：
 
 ```json
 {
   "dependencies": {
-    "dsh-session-ecology": "file:../../plugins/dsh-session-ecology-0.7.0.tgz"
+    "dsh-session-ecology": "file:../../plugins/dsh-session-ecology-0.8.0.tgz"
   }
 }
 ```
@@ -168,5 +167,6 @@ npm test
 
 ## 更新记录
 
+- `0.8.0`：换卷继承新增 **「回忆锚点小总结」**——自动提取上卷最后一轮真实问答（过滤系统注入上下文、思维链与自总结轮次），写入交接单存档并在新卷首条回执中按 4 行精炼模板展示「之前在干什么 / 最后你说 / 最后它回」；收紧 `purge_archived` 的 `include_orphan_dirs` 判定边界，100% 保护含真实聊天记录的「未分组」活跃对话，仅回收空壳/失效路径/工作区脱挂真孤儿目录；同步更新 Web 清理面板空间口径与孤儿目录独立徽章；`PROJECT.md` 写入守卫同步拦截 `deja_remember` 另立第二本结论账本。
 - `0.7.0`：新增对话框底部状态栏「换卷距离进度条」（`conversation.composer.dock` `order: 50`，零轮询实时追踪三闸门进度、点击弹出三闸门明细与手动换卷按钮、支持 `showDockMeter` 开关与桌面端底部栏防截断自适应）；新增 `GET /dsh-session-ecology/session` 单会话水位接口与回合结束 `session-waterline` SSE 推送；修复 `/health` 版本号动态读取。
 - `0.6.0`：`purge_archived` 四项修复——回收站「移出量 vs 真释放」拆分 + `empty_recycle_bin`；新增磁盘孤儿会话目录清理（`include_orphan_dirs`）；守卫顺序改为定时任务先于 mtime 活跃窗；孤儿缓存扫描覆盖 `storages` 下所有缓存源。

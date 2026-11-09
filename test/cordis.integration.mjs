@@ -133,13 +133,14 @@ try {
   assert.equal(purgeToolOut.zeroRestart, true)
   console.log('PASS  2/8 fleet_ecology_status, purge_archived tool, tools.guard & systemPrompt.context verified')
 
-  // 3. HTTP `/health` (0.7.0), `/session`, `/catalog` & `/project-memory` work on loopback
+  // 3. HTTP `/health` (matches package.json version), `/session`, `/catalog` & `/project-memory` work on loopback
+  const expectedPkgVersion = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
   const healthRes = await fetch(`http://127.0.0.1:${port}${ROUTE_PATH}/health`)
   assert.equal(healthRes.status, 200)
   const healthJson = await healthRes.json()
   assert.equal(healthJson.ok, true)
   assert.equal(healthJson.plugin, 'dsh-session-ecology')
-  assert.equal(healthJson.version, '0.7.0')
+  assert.equal(healthJson.version, expectedPkgVersion)
   assert.equal(healthJson.showDockMeter, true)
   assert.equal(healthJson.projectMemoryGuardEnabled, true)
   const badSessRes = await fetch(`http://127.0.0.1:${port}${ROUTE_PATH}/session?sessionId=bad`)

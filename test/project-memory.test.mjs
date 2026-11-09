@@ -21,10 +21,25 @@ test('judgeProjectMemoryWrite enforces 15KB/250-line cap while allowing monotoni
     fs.mkdirSync(backupDir, { recursive: true })
     fs.writeFileSync(projPath, '# Project\nInitial healthy content\n', 'utf8')
 
-    // 1. Read calls and non-PROJECT.md files are never gated
+    // 1. Read calls, deja read-only recall, and non-PROJECT.md files are never gated
     assert.equal(
       judgeProjectMemoryWrite({ name: 'read', arguments: { file_path: projPath } }),
       undefined
+    )
+    assert.equal(
+      judgeProjectMemoryWrite({ name: 'deja_recall', arguments: { query: 'PROJECT.md' } }),
+      undefined
+    )
+    // `deja_remember` (second ledger write) is hard-blocked with guidance to PROJECT.md
+    const dejaBlockReason = judgeProjectMemoryWrite({
+      name: 'deja_remember',
+      arguments: { text: 'some decision' },
+    })
+    assert.match(String(dejaBlockReason), /严禁使用 deja_remember/)
+    assert.match(String(dejaBlockReason), /PROJECT\.md/)
+    assert.match(
+      String(judgeProjectMemoryWrite({ name: 'mcp_deja_deja_remember', arguments: {} })),
+      /严禁使用 deja_remember/
     )
     assert.equal(
       judgeProjectMemoryWrite({

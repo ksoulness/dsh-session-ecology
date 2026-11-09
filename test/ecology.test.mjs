@@ -13,7 +13,10 @@ import {
   encodeFsSessionSegment,
   encodeProjectSegment,
   evaluateSessionEcology,
+  extractLastExchangeFromEvents,
+  extractLastExchangeFromTurns,
   inheritAnnotationForContinuation,
+  isSyntheticEcologyPrompt,
   parseTagInput,
   parseTitleGeneration,
   scheduleCreateRequestOf,
@@ -1014,5 +1017,263 @@ test('0.6.0 organizer.purgeArchived: disk-only orphan dirs, extra cache sources,
     steward.dispose()
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true })
+  }
+})
+
+test('0.8.0 organizer.purgeArchived protects active ungrouped chats while recycling empty shells & invalid-cwd orphans', async () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-ecology-purge080-'))
+  const tmpHome = path.join(tmpRoot, 'dsh-home')
+  const wsDir = path.join(tmpRoot, 'ws-registered')
+  const ungroupedDir = path.join(tmpRoot, 'scratch-ungrouped')
+  const deletedProjectPath = path.join(tmpRoot, 'deleted-project-dir')
+  fs.mkdirSync(wsDir, { recursive: true })
+  fs.mkdirSync(ungroupedDir, { recursive: true })
+  const realWs = fs.realpathSync(wsDir)
+  const realUngrouped = fs.realpathSync(ungroupedDir)
+
+  const ungroupedChatSid = 'session-77777777-0000-4444-8888-000000000001'
+  const emptyShellSid = 'session-77777777-0000-4444-8888-000000000002'
+  const deletedPathSid = 'session-77777777-0000-4444-8888-000000000003'
+  const nowMs = 1_760_000_000_000
+
+  function writeRawSession(id, cwdPath, lines, mtimeMs) {
+    const dir = path.join(tmpHome, 'sessions', encodeProjectSegment(cwdPath), encodeFsSessionSegment(id))
+    fs.mkdirSync(dir, { recursive: true })
+    const fpath = path.join(dir, 'session.v4.jsonl')
+    fs.writeFileSync(fpath, `${lines.map(l => JSON.stringify(l)).join('\n')}\n`, 'utf8')
+    const ts = new Date(mtimeMs)
+    fs.utimesSync(fpath, ts, ts)
+    fs.utimesSync(dir, ts, ts)
+    return dir
+  }
+
+  try {
+    // 1) Real active ungrouped chat: NOT in any workspace/archive/pin, valid non-workspace cwd, has real messages -> MUST BE PROTECTED!
+    const ungroupedChatDir = writeRawSession(ungroupedChatSid, realUngrouped, [
+      { type: 'session', version: 4, id: ungroupedChatSid, cwd: realUngrouped, createdAt: nowMs - 8 * 3600_000 },
+      { type: 'turn/start', seq: 1, data: { turn: 1 } },
+      { type: 'user/message', seq: 2, data: { content: [{ type: 'text', text: '帮我分析这个临时脚本的参数' }], source: { kind: 'user' } } },
+      { type: 'assistant/message', seq: 3, data: { turn: 1, message: { content: [{ type: 'text', text: '这个脚本有 3 个关键参数…' }] } } },
+    ], nowMs - 8 * 3600_000)
+
+    // 2) Unseeded 0-message empty shell in ungrouped dir -> MUST BE RECYCLED as `empty_shell`!
+    const emptyShellDir = writeRawSession(emptyShellSid, realUngrouped, [
+      { type: 'session', version: 4, id: emptyShellSid, cwd: realUngrouped, isSeeded: false, createdAt: nowMs - 8 * 3600_000 },
+      { type: 'permission/preset', seq: 0, data: { preset: 'workspace-write' } },
+    ], nowMs - 8 * 3600_000)
+
+    // 3) Unregistered session whose cwd was deleted from disk -> MUST BE RECYCLED as `invalid_cwd`!
+    const deletedPathSessionDir = writeRawSession(deletedPathSid, deletedProjectPath, [
+      { type: 'session', version: 4, id: deletedPathSid, cwd: deletedProjectPath, createdAt: nowMs - 8 * 3600_000 },
+      { type: 'turn/start', seq: 1, data: { turn: 1 } },
+      { type: 'user/message', seq: 2, data: { content: [{ type: 'text', text: '旧目录对话' }], source: { kind: 'user' } } },
+    ], nowMs - 8 * 3600_000)
+
+    const wsMain = {
+      id: 'ws-main',
+      title: 'Main',
+      path: realWs,
+      sessionIds: [],
+      async attachSession(id) { if (!this.sessionIds.includes(id)) this.sessionIds.push(id) },
+      async detachSession(id) { this.sessionIds = this.sessionIds.filter(x => x !== id) },
+    }
+    const fakeCtx = {
+      sessions: { get: () => undefined, list: () => [] },
+      agents: { get: () => undefined },
+      sessionPersistence: {
+        coldLogMemo: new Map(),
+        locate: h => ({
+          path: path.join(tmpHome, 'sessions', encodeProjectSegment(h.cwd), encodeFsSessionSegment(h.id), 'session.v4.jsonl'),
+        }),
+      },
+      workspaceRegistry: {
+        archivedSessionIds: [],
+        pinnedSessionIds: [],
+        headers: new Map(),
+        sessionPaths: new Map(),
+        invalidSessionPaths: new Set(),
+        list: () => [wsMain],
+        archiveSession: async () => {},
+        unarchiveSession: async () => {},
+        pinSession: async () => {},
+        unpinSession: async () => {},
+      },
+      schedule: {
+        catalog: async () => [],
+        list: async () => [],
+        delete: async ({ id }) => ({ id, deleted: true }),
+      },
+    }
+
+    const steward = createEcologySteward(fakeCtx, {
+      dshHome: tmpHome,
+      postBootSweepEnabled: false,
+      recycleHandler: async (paths) => {
+        const trash = path.join(tmpRoot, 'fake-recycle-bin')
+        fs.mkdirSync(trash, { recursive: true })
+        for (const p of paths) {
+          if (fs.existsSync(p)) {
+            fs.renameSync(p, path.join(trash, `${Date.now()}-${Math.random().toString(16).slice(2)}-${path.basename(p)}`))
+          }
+        }
+        return { method: 'mock-recycle-bin', moved: paths }
+      },
+    })
+
+    const survey = await steward.organizer.purgeArchived({ dryRun: true, activeGuardMinutes: 60, nowMs })
+    assert.equal(survey.ok, true)
+    assert.equal(survey.orphanDirCount, 2)
+    assert.equal(survey.candidates.find(c => c.sessionId === emptyShellSid)?.orphanReason, 'empty_shell')
+    assert.equal(survey.candidates.find(c => c.sessionId === deletedPathSid)?.orphanReason, 'invalid_cwd')
+    assert.equal(survey.candidates.find(c => c.sessionId === ungroupedChatSid), undefined, 'Active ungrouped chat must NEVER be a purge candidate')
+    const ungroupedSkip = survey.skippedItems.find(i => i.sessionId === ungroupedChatSid)
+    assert.equal(ungroupedSkip?.code, 'active_ungrouped')
+
+    const execRes = await steward.organizer.purgeArchived({ dryRun: false, activeGuardMinutes: 60, nowMs })
+    assert.equal(execRes.ok, true)
+    assert.equal(execRes.summary.recycledOrphanDirs, 2)
+    assert.equal(fs.existsSync(ungroupedChatDir), true, 'Active ungrouped chat directory MUST remain intact!')
+    assert.equal(fs.existsSync(emptyShellDir), false, 'Empty shell directory must be recycled')
+    assert.equal(fs.existsSync(deletedPathSessionDir), false, 'Invalid-cwd orphan directory must be recycled')
+
+    steward.dispose()
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true })
+  }
+})
+
+test('0.8.0 rollover memory-anchor recap extracts last real exchange (ignoring runtime snapshots, reasoning & self-summary) into #2 opening prompt and archive', async () => {
+  assert.equal(isSyntheticEcologyPrompt('【DSH 会话生态守卫 · 自动换卷自总结】\n请总结'), true)
+  assert.equal(isSyntheticEcologyPrompt('【DSH 会话生态自动继承 · 第 #2 卷交接单】'), true)
+  assert.equal(isSyntheticEcologyPrompt('把回测放宽阈值调到 0.65 再跑一次'), false)
+
+  const sampleEvents = [
+    { type: 'turn/start', data: { turn: 4 } },
+    { type: 'user/message', data: { content: [{ type: 'text', text: '把失败回测放宽方式的过滤阈值改成 0.65，对比样本外夏普' }], source: { kind: 'user' } } },
+    { type: 'user/message', data: { content: [{ type: 'text', text: 'Current runtime context. This snapshot supersedes earlier runtime-context snapshots.' }], source: { kind: 'runtime-context', form: 'snapshot' } } },
+    { type: 'user/message', data: { content: [{ type: 'text', text: '<system-reminder>\nSkill catalog...' }], source: { kind: 'skill-catalog', form: 'catalog' } } },
+    {
+      type: 'assistant/message',
+      data: {
+        turn: 4,
+        step: 1,
+        message: {
+          content: [
+            { type: 'reasoning', text: '内部思考：先读取回测脚本参数，不能作为最终回复暴露' },
+            { type: 'tool-call', name: 'run_backtest' },
+          ],
+        },
+      },
+    },
+    {
+      type: 'assistant/message',
+      data: {
+        turn: 4,
+        step: 2,
+        message: {
+          content: [
+            { type: 'reasoning', text: '内部思考：对比结果出来了' },
+            { type: 'text', text: '已按 0.65 阈值完成样本外回测：夏普从 1.41 提升至 1.78，最大回撤降至 4.3%，待你确认是否写入配置。' },
+          ],
+        },
+      },
+    },
+    // Turn 5 is the internal self-summary turn sent by dsh-session-ecology!
+    { type: 'turn/start', data: { turn: 5 } },
+    { type: 'user/message', data: { content: [{ type: 'text', text: '【DSH 会话生态守卫 · 自动换卷自总结】\n请输出会话交接单' }], source: { kind: 'user' } } },
+    { type: 'assistant/message', data: { turn: 5, step: 1, message: { content: [{ type: 'text', text: '### 会话交接单\n1. 核心职责：回测参数调优' }] } } },
+  ]
+
+  // Even without maxTurn cap, synthetic self-summary Turn 5 is automatically skipped!
+  const ex = extractLastExchangeFromEvents(sampleEvents)
+  assert.equal(ex.turn, 4)
+  assert.equal(ex.isScheduledTurn, false)
+  assert.equal(ex.userPrompt, '把失败回测放宽方式的过滤阈值改成 0.65，对比样本外夏普')
+  assert.match(ex.assistantReply, /夏普从 1\.41 提升至 1\.78/)
+  assert.doesNotMatch(ex.assistantReply, /内部思考/)
+
+  // Scheduled turn fallback from turnOutline
+  const schedEx = extractLastExchangeFromTurns([
+    { turn: 8, prompt: '', response: '【16:00 巡检】全部指标正常' },
+    { turn: 9, prompt: '【DSH 会话生态守卫 · 自动换卷自总结】', response: '交接单' },
+  ])
+  assert.equal(schedEx.turn, 8)
+  assert.equal(schedEx.isScheduledTurn, true)
+  assert.match(schedEx.userPrompt, /定时任务自动触发/)
+  assert.equal(schedEx.assistantReply, '【16:00 巡检】全部指标正常')
+
+  // Full rollover check verifying disk `.jsonl` tail extraction + 4-line memory-anchor opening prompt
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-ecology-recap080-'))
+  try {
+    const oldId = 'session-88888888-1111-2222-3333-444444444444'
+    const cwd = path.join(tmpHome, 'strategy-lab')
+    fs.mkdirSync(cwd, { recursive: true })
+    const sDir = path.join(tmpHome, 'sessions', encodeProjectSegment(cwd), oldId)
+    fs.mkdirSync(sDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(sDir, 'session.v4.jsonl'),
+      [
+        JSON.stringify({ type: 'session', version: 4, id: oldId, cwd }),
+        ...sampleEvents.slice(0, 6).map(e => JSON.stringify(e)),
+      ].join('\n') + '\n',
+      'utf8'
+    )
+
+    const promptsSent = []
+    const fakeCtx = {
+      sessions: { get: () => undefined, list: () => [] },
+      agents: { get: () => undefined },
+      workspaceRegistry: {
+        archivedSessionIds: [],
+        pinnedSessionIds: [],
+        list: () => [],
+        archiveSession: async () => {},
+      },
+      sessionController: {
+        inspect: async id => ({ header: { id, cwd } }),
+        projections: async () => ({
+          values: {
+            title: '回测放宽方式实验',
+            workingDirectory: cwd,
+            contextPressure: { contextWindow: 200_000, pressureTokens: 95_000, surfaceTokens: 210_000 },
+            sessionStats: { turns: 4, steps: 12 },
+          },
+        }),
+        create: async () => ({ sessionId: 'session-88888888-aaaa-bbbb-cccc-dddddddddddd' }),
+        rename: async () => {},
+        prompt: async (req) => { promptsSent.push(req) },
+      },
+    }
+
+    const steward = createEcologySteward(fakeCtx, {
+      dshHome: tmpHome,
+      postBootSweepEnabled: false,
+      notifyFeishu: false,
+    })
+
+    const res = await steward.startHandover(oldId, {
+      trigger: 'manual',
+      force: true,
+      summary: '1. **核心职责与此前主线**：围绕策略失败样本测试放宽过滤条件。\n2. **已完成进展**：0.65 阈值夏普达 1.78。',
+    })
+    assert.equal(res.ok, true)
+    assert.equal(promptsSent.length, 1)
+    const openingText = promptsSent[0].content[0].text
+    assert.match(openingText, /上卷最后一轮对话实录（回忆锚点）/)
+    assert.match(openingText, /把失败回测放宽方式的过滤阈值改成 0\.65/)
+    assert.match(openingText, /夏普从 1\.41 提升至 1\.78/)
+    assert.match(openingText, /- \*\*之前在干什么\*\*：/)
+    assert.match(openingText, /- \*\*最后你说\*\*：/)
+    assert.match(openingText, /- \*\*最后它回\*\*：/)
+    assert.match(openingText, /严禁在本轮读取文件、严禁调用任何工具/)
+
+    const doc = steward.readHandoffMarkdown(oldId)
+    assert.equal(doc.ok, true)
+    assert.match(doc.markdown, /## 上卷最后一轮对话实录（回忆锚点）/)
+    assert.equal(steward._internals.ledger.history[0].lastExchange.userPrompt, '把失败回测放宽方式的过滤阈值改成 0.65，对比样本外夏普')
+
+    steward.dispose()
+  } finally {
+    fs.rmSync(tmpHome, { recursive: true, force: true })
   }
 })

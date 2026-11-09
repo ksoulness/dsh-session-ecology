@@ -1,7 +1,7 @@
 {
   "name": "dsh-session-ecology",
-  "version": "0.7.0",
-  "description": "DeepSeek Harness (DSH) session ecology steward, composer dock rollover progress meter, manual session organizer, zero-restart Recycle-Bin archived/orphan purge, PROJECT.md memory guard & 4-tab Web Settings UI.",
+  "version": "0.8.0",
+  "description": "DeepSeek Harness (DSH) session ecology steward, rollover memory-anchor recap, composer dock rollover progress meter, manual session organizer, zero-restart Recycle-Bin archived/orphan purge, PROJECT.md memory guard & 4-tab Web Settings UI.",
   "keywords": [
     "dsh",
     "dsh-plugin",

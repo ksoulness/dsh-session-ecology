@@ -201,11 +201,15 @@ test('client.js registers settings.section slot and sanitizes threshold form val
 
   const purgeBanner = formatPurgeArchivedBanner({
     ok: true,
+    recycleBinEmptied: false,
     sessionsBytesBefore: 12 * 1048576,
     sessionsBytesAfter: 2 * 1048576,
+    sessionsMovedBytes: 10 * 1048576,
     sessionsFreedBytes: 10 * 1048576,
+    reclaimedBytes: 0,
     summary: {
       recycledSessions: 3,
+      recycledOrphanDirs: 1,
       prunedGhosts: 2,
       recycledOrphanCaches: 5,
       skippedSessions: 1,
@@ -213,8 +217,26 @@ test('client.js registers settings.section slot and sanitizes threshold form val
     },
   })
   assert.equal(purgeBanner.ok, true)
-  assert.match(purgeBanner.text, /已清理 3 个归档会话 · 摘除 2 个幽灵 ID · 回收 5 个孤儿缓存 · 保护跳过 1/)
-  assert.match(purgeBanner.text, /sessions\/ 12\.0 MB → 2\.0 MB（释放 10\.0 MB，零重启已进系统回收站）/)
+  assert.match(purgeBanner.text, /已清理 3 个会话目录（含孤儿\/空壳目录 1 个） · 摘除 2 个幽灵 ID · 回收 5 个孤儿缓存 · 保护跳过 1/)
+  assert.match(purgeBanner.text, /sessions\/ 12\.0 MB → 2\.0 MB（目录移出 10\.0 MB 已进系统回收站可还原；清空回收站后才腾出磁盘空间）/)
+
+  const purgeEmptiedBanner = formatPurgeArchivedBanner({
+    ok: true,
+    recycleBinEmptied: true,
+    sessionsBytesBefore: 12 * 1048576,
+    sessionsBytesAfter: 2 * 1048576,
+    sessionsMovedBytes: 10 * 1048576,
+    reclaimedBytes: 10.5 * 1048576,
+    summary: {
+      recycledSessions: 3,
+      prunedGhosts: 0,
+      recycledOrphanCaches: 2,
+      skippedSessions: 0,
+      failedSessions: 0,
+    },
+  })
+  assert.equal(purgeEmptiedBanner.ok, true)
+  assert.match(purgeEmptiedBanner.text, /已清空回收站真腾出 10\.5 MB/)
 
   const tree = registeredSlots[0].Component({ close: () => { closedModal = true } })
   assert.equal(tree.type, 'div')
